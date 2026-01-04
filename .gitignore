@@ -1,0 +1,93 @@
+############################
+# Build artifacts (C / C++)
+############################
+build/
+bin/
+out/
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+
+############################
+# CMake
+############################
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+############################
+# IDE / Editors
+############################
+.vs/
+.vscode/
+.idea/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.user
+*.suo
+
+############################
+# Logs
+############################
+*.log
+mailserver.log
+logs/
+
+############################
+# Mail server runtime data
+############################
+data/
+queue/
+spool/
+maildata/
+tmp/
+*.lock
+
+############################
+# Environment / Secrets
+############################
+.env
+.env.*
+*.env
+
+############################
+# Node.js (API + Frontend)
+############################
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+############################
+# Frontend build output
+############################
+dist/
+.vite/
+
+############################
+# Coverage / Tests
+############################
+coverage/
+.nyc_output/
+
+############################
+# OS / Temp
+############################
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+*~

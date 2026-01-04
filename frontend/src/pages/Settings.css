@@ -1,0 +1,32 @@
+.settings {
+  padding: 2rem;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.settings h1 {
+  color: #2c3e50;
+  margin-bottom: 2rem;
+}
+
+.settings-placeholder {
+  background: white;
+  padding: 2rem;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.settings-placeholder h2 {
+  color: #34495e;
+  margin-bottom: 1rem;
+}
+
+.settings-placeholder ul {
+  list-style-type: disc;
+  padding-left: 2rem;
+}
+
+.settings-placeholder li {
+  margin: 0.5rem 0;
+  color: #555;
+}
