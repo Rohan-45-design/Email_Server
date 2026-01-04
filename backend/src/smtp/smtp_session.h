@@ -1,0 +1,77 @@
+#pragma once
+
+#include <string>
+#include <sstream>
+#include <memory>
+#include <chrono>
+#include "core/ssl_raii.h"
+#include "core/server_context.h"
+#include "antispam/auth_results.h"
+#include "antispam/spf_checker.h"
+#include "antispam/dkim_verifier.h"
+#include "antispam/dmarc_evaluator.h"
+
+enum class SmtpState {
+    CONNECTED,      // Initial connection
+    HELO_EHLO,      // After HELO/EHLO
+    AUTH,          // After successful AUTH
+    MAIL_FROM,    // After MAIL FROM
+    RCPT_TO,       // After RCPT TO
+    DATA           // In DATA mode
+};
+
+class SmtpSession {
+private:
+    SslPtr ssl_ = nullptr;
+    bool tlsActive_ = false;
+    SmtpState state_ = SmtpState::CONNECTED;
+    std::chrono::steady_clock::time_point lastActivity_;
+
+public:
+    SmtpSession(ServerContext& ctx, int clientSock);
+    SmtpSession(ServerContext& ctx, int clientSock, SslPtr ssl);
+    ~SmtpSession();
+    void run();
+
+private:
+    ServerContext& context_;
+    int sock_;
+
+    bool authed_ = false;
+    std::string username_;
+    std::string heloDomain_;
+    std::string peerIp_;
+    std::string mailFrom_;
+    std::vector<std::string> rcptTo_;
+
+    // NEW: per-message auth results (SPF/DKIM/DMARC)
+    AuthResultsState authResults_;
+
+    void sendLine(const std::string& line);
+    void sendMultilineResponse(const std::vector<std::string>& lines);
+    bool readLine(std::string& out);
+    bool isTimeoutExceeded() const;
+    void updateActivity();
+
+    int secureSend(const std::string& data);
+    int secureRecv(char* buf, int len);
+
+    void handleCommand(const std::string& line);
+
+    void handleEhlo(const std::string& arg);
+    void handleHelo(const std::string& arg);
+    void handleStarttls();
+    void handleAuth(const std::string& args);
+    void handleMailFrom(const std::string& args);
+    void handleRcptTo(const std::string& args);
+    void handleData();
+    void handleQuit();
+
+    std::string base64Encode(const std::string& in);
+    std::string base64Decode(const std::string& in);
+
+    void splitCommand(const std::string& in, std::string& cmd, std::string& args);
+
+    bool tlsRequiredAndMissing() const;
+    bool startTlsRequiredAndMissing() const;
+};

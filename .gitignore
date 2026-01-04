@@ -46,7 +46,6 @@ logs/
 # Mail server runtime data
 ############################
 data/
-queue/
 spool/
 maildata/
 tmp/
