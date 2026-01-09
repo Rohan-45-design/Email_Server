@@ -13,6 +13,7 @@ bool TlsContext::init(const std::string& certFile, const std::string& keyFile) {
     SSL_load_error_strings();
     OpenSSL_add_all_algorithms();
     
+    // Server context
     ctx_ = SSL_CTX_new(TLS_server_method());
     if (!ctx_) return false;
     
@@ -26,6 +27,17 @@ bool TlsContext::init(const std::string& certFile, const std::string& keyFile) {
     if (!SSL_CTX_check_private_key(ctx_))
         return false;
     
+    // Client context for outbound connections
+    clientCtx_ = SSL_CTX_new(TLS_client_method());
+    if (!clientCtx_) return false;
+    
+    SSL_CTX_set_min_proto_version(clientCtx_, TLS1_2_VERSION);
+    SSL_CTX_set_options(clientCtx_, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
+    // Enable certificate verification for clients
+    SSL_CTX_set_verify(clientCtx_, SSL_VERIFY_PEER, nullptr);
+    // Use default CA certificates
+    SSL_CTX_set_default_verify_paths(clientCtx_);
+    
     Logger::instance().log(LogLevel::Info, "TLS initialized");
     return true;
 }
@@ -36,6 +48,13 @@ SSL* TlsContext::createSSL(int fd) {
     return ssl;
 }
 
+SSL* TlsContext::createClientSSL(int fd) {
+    SSL* ssl = SSL_new(clientCtx_);
+    SSL_set_fd(ssl, fd);
+    return ssl;
+}
+
 TlsContext::~TlsContext() {
     if (ctx_) SSL_CTX_free(ctx_);
+    if (clientCtx_) SSL_CTX_free(clientCtx_);
 }

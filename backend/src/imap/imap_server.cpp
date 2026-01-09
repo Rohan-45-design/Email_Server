@@ -5,9 +5,7 @@
 #include "core/server_context.h"
 #include "core/logger.h"
 #include <chrono>
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "core/platform_socket.h"
 #include <atomic>
 
 ImapServer::ImapServer(ServerContext& ctx, int port)
@@ -29,8 +27,8 @@ void ImapServer::stop() {
     if (thread_.joinable()) {
         // closing the listening socket will interrupt accept() in run()
         if (listenSock_ != INVALID_SOCKET) {
-            shutdown(listenSock_, SD_BOTH);
-            closesocket(listenSock_);
+            shutdown(listenSock_, SHUT_RDWR);
+            close_socket(listenSock_);
             listenSock_ = INVALID_SOCKET;
         }
         thread_.join();
@@ -49,17 +47,9 @@ void ImapServer::stop() {
 void ImapServer::run() {
     Logger::instance().log(LogLevel::Info, "IMAP listening on port " + std::to_string(port_));
 
-    WSADATA wsaData;
-    int res = WSAStartup(MAKEWORD(2, 2), &wsaData);
-    if (res != 0) {
-        Logger::instance().log(LogLevel::Error, "IMAP WSAStartup failed");
-        return;
-    }
-
     listenSock_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listenSock_ == INVALID_SOCKET) {
         Logger::instance().log(LogLevel::Error, "IMAP socket() failed");
-        WSACleanup();
         return;
     }
 
@@ -70,16 +60,14 @@ void ImapServer::run() {
 
     if (bind(listenSock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
         Logger::instance().log(LogLevel::Error, "IMAP bind() failed");
-        closesocket(listenSock_);
-        WSACleanup();
+        close_socket(listenSock_);
         return;
     }
 
     if (listen(listenSock_, SOMAXCONN) == SOCKET_ERROR) {
         Logger::instance().log(LogLevel::Error, "IMAP listen() failed");
-        closesocket(listenSock_);
+        close_socket(listenSock_);
         listenSock_ = INVALID_SOCKET;
-        WSACleanup();
         return;
     }
 
@@ -93,7 +81,7 @@ void ImapServer::run() {
             continue;
         }
 
-        SOCKET client = accept(listenSock_, nullptr, nullptr);
+        socket_t client = accept(listenSock_, nullptr, nullptr);
         if (client == INVALID_SOCKET) {
             if (!running_) break;
             Logger::instance().log(LogLevel::Warn, "IMAP accept() failed");
@@ -102,7 +90,7 @@ void ImapServer::run() {
         
         std::string ip = "unknown";
         sockaddr_in peer{};
-        int peerLen = sizeof(peer);
+        socklen_t peerLen = sizeof(peer);
         if (getpeername(client, (sockaddr*)&peer, &peerLen) == 0) {
             char ipbuf[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &peer.sin_addr, ipbuf, sizeof(ipbuf));
@@ -113,7 +101,7 @@ void ImapServer::run() {
                     LogLevel::Warn,
                     "IMAP rate limit exceeded for " + ip
                 );
-                closesocket(client);
+                close_socket(client);
                 continue;
             }
         }
@@ -134,7 +122,7 @@ void ImapServer::run() {
                     Logger::instance().log(LogLevel::Error, std::string("IMAPS handshake failed: ") + errbuf);
                     // session wasn't started; free ssl and cleanup
                     if (raw) SSL_free(raw);
-                    closesocket(client);
+                    close_socket(client);
                     activeConnections--;
                     RateLimiter::instance().releaseConnection(ip);
                     return;
@@ -150,7 +138,7 @@ void ImapServer::run() {
             auto duration_ms = std::chrono::duration<double, std::milli>(session_end - session_start).count();
             Logger::instance().observe_imap_session(duration_ms);
             // session owns ssl_ and will free it in its destructor
-            closesocket(client);
+            close_socket(client);
             activeConnections--;
             RateLimiter::instance().releaseConnection(ip);
         });
@@ -160,9 +148,8 @@ void ImapServer::run() {
         }
     }
     if (listenSock_ != INVALID_SOCKET) {
-        closesocket(listenSock_);
+        close_socket(listenSock_);
         listenSock_ = INVALID_SOCKET;
     }
-    WSACleanup();
     Logger::instance().log(LogLevel::Info, "IMAP server stopped");
 }

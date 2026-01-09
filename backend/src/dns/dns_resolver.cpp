@@ -2,9 +2,7 @@
 #include "dns_packet.h"
 #include "dns_types.h"
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
+#include "core/platform_socket.h"
 
 static const char* DNS_SERVER = "8.8.8.8";
 
@@ -14,8 +12,7 @@ DnsResolver& DnsResolver::instance() {
 }
 
 DnsResolver::DnsResolver() {
-    WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
+    // Network initialization is now handled centrally
 }
 
 static std::vector<uint8_t> buildQuery(const std::string& name, uint16_t type) {
@@ -41,7 +38,7 @@ static std::vector<uint8_t> buildQuery(const std::string& name, uint16_t type) {
 
 std::vector<std::string> DnsResolver::query(const std::string& name,
                                             uint16_t type) {
-    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    socket_t s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(53);
@@ -53,7 +50,7 @@ std::vector<std::string> DnsResolver::query(const std::string& name,
 
     uint8_t buf[512];
     int len = recv(s, (char*)buf, sizeof(buf), 0);
-    closesocket(s);
+    close_socket(s);
 
     auto pkt = parseDnsResponse(buf, len);
     std::vector<std::string> out;

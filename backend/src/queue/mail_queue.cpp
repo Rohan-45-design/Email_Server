@@ -7,8 +7,16 @@
 #include <fstream>
 #include <chrono>
 #include <random>
+
+#ifdef _WIN32
 #include <windows.h>
 #include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#include <cstring>
+#endif
+
 std::mutex MailQueue::queueMutex_;
 std::vector<std::shared_ptr<QueueMessage>> MailQueue::retryQueue_;
 std::vector<std::shared_ptr<QueueMessage>> MailQueue::inflightQueue_;
@@ -21,7 +29,8 @@ static constexpr int LEASE_TIMEOUT_SEC = 300;
 static bool atomicWriteFile(const std::string& path, const std::string& content) {
     std::string tempPath = path + ".tmp";
 
-    // Write to temp file with fsync
+#ifdef _WIN32
+    // Windows implementation
     HANDLE hFile = CreateFileA(tempPath.c_str(), GENERIC_WRITE, 0, NULL,
                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
@@ -58,6 +67,43 @@ static bool atomicWriteFile(const std::string& path, const std::string& content)
         DeleteFileA(tempPath.c_str());
         return false;
     }
+#else
+    // POSIX implementation
+    int fd = open(tempPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd == -1) {
+        Logger::instance().log(LogLevel::Error,
+            "Queue: Failed to create temp file " + tempPath + ": " + strerror(errno));
+        return false;
+    }
+
+    ssize_t bytesWritten = write(fd, content.data(), content.size());
+    if (bytesWritten == -1 || static_cast<size_t>(bytesWritten) != content.size()) {
+        Logger::instance().log(LogLevel::Error,
+            "Queue: Failed to write to temp file " + tempPath + ": " + strerror(errno));
+        close(fd);
+        unlink(tempPath.c_str());
+        return false;
+    }
+
+    // Flush to disk (fsync equivalent)
+    if (fsync(fd) == -1) {
+        Logger::instance().log(LogLevel::Error,
+            "Queue: Failed to flush temp file " + tempPath + ": " + strerror(errno));
+        close(fd);
+        unlink(tempPath.c_str());
+        return false;
+    }
+
+    close(fd);
+
+    // Atomic rename
+    if (rename(tempPath.c_str(), path.c_str()) == -1) {
+        Logger::instance().log(LogLevel::Error,
+            "Queue: Failed to rename temp file " + tempPath + " to " + path + ": " + strerror(errno));
+        unlink(tempPath.c_str());
+        return false;
+    }
+#endif
 
     // Verify final file exists
     if (!fs::exists(path)) {

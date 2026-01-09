@@ -10,5 +10,5 @@ struct VirusScanResult {
 
 class VirusScanner {
 public:
-    static VirusScanResult scan(const std::string& rawMessage);
+    static VirusScanResult scan(const std::string& raw);
 };

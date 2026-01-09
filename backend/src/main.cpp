@@ -3,6 +3,7 @@
 #include "core/logger.h"
 #include "core/tls_context.h"
 #include "core/tls_enforcement.h"
+#include "core/network_init.h"
 #include "smtp/smtp_server.h"
 #include "imap/imap_server.h"
 #include <iostream>
@@ -39,7 +40,7 @@ LogLevel logLevelFromString(const std::string& s) {
     return LogLevel::Info;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     try {
         // Register signal handlers
         std::signal(SIGINT, signalHandler);
@@ -48,12 +49,15 @@ int main() {
         std::signal(SIGHUP, signalHandler);
 #endif
 
+        // 0️⃣ Initialize network stack (Winsock on Windows)
+        NetworkInitializer networkInit;
+
         // Parse command-line args
         std::string configPath = "config/server.yml";
-        for (int i = 1; i < __argc; ++i) {
-            std::string arg = __argv[i];
-            if (arg == "--config" && i + 1 < __argc) {
-                configPath = __argv[i + 1];
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--config" && i + 1 < argc) {
+                configPath = argv[i + 1];
                 ++i;
             }
         }

@@ -2,11 +2,18 @@
 #include "admin/admin_routes.h"
 #include "core/logger.h"
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <string>
+#include "core/platform_socket.h"
 
-#pragma comment(lib, "ws2_32.lib")
+#include <string>
+#include <cerrno>
+#include <stdexcept>
+
+#ifndef _WIN32
+#include <unistd.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#endif
 
 void AdminServer::start(int port) {
     running_ = true;
@@ -15,64 +22,68 @@ void AdminServer::start(int port) {
 
 void AdminServer::stop() {
     running_ = false;
-    // Close listener to interrupt accept()
+
     if (listenSock_ != INVALID_SOCKET) {
-        shutdown(listenSock_, SD_BOTH);
-        closesocket(listenSock_);
+        shutdown(listenSock_, SHUT_RDWR);
+        close_socket(listenSock_);
         listenSock_ = INVALID_SOCKET;
     }
+
     if (thread_.joinable())
         thread_.join();
 }
 
 void AdminServer::run(int port) {
-    WSADATA wsa;
-    int result = WSAStartup(MAKEWORD(2,2), &wsa);
-    if (result != 0) {
-        Logger::instance().log(LogLevel::Error,
-            "AdminServer: WSAStartup failed with error " + std::to_string(result));
-        return;
-    }
+
+#ifdef _WIN32
+    // Network initialization is now handled centrally
+#endif
 
     listenSock_ = socket(AF_INET, SOCK_STREAM, 0);
     if (listenSock_ == INVALID_SOCKET) {
+#ifdef _WIN32
         int error = WSAGetLastError();
+#else
+        int error = errno;
+#endif
         Logger::instance().log(LogLevel::Error,
             "AdminServer: socket() failed with error " + std::to_string(error));
+#ifdef _WIN32
         WSACleanup();
+#endif
         return;
     }
 
-    // Set SO_REUSEADDR to allow port reuse
     int opt = 1;
-    if (setsockopt(listenSock_, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt)) == SOCKET_ERROR) {
-        Logger::instance().log(LogLevel::Warn,
-            "AdminServer: setsockopt(SO_REUSEADDR) failed");
-    }
+    setsockopt(listenSock_, SOL_SOCKET, SO_REUSEADDR,
+               (char*)&opt, sizeof(opt));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    if (bind(listenSock_, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        int error = WSAGetLastError();
-        Logger::instance().log(LogLevel::Error,
-            "AdminServer: bind() failed on port " + std::to_string(port) + 
-            " with error " + std::to_string(error));
-        closesocket(listenSock_);
+    if (bind(listenSock_, (sockaddr*)&addr, sizeof(addr)) < 0) {
+        close_socket(listenSock_);
         listenSock_ = INVALID_SOCKET;
-        WSACleanup();
+        Logger::instance().log(LogLevel::Error,
+            "AdminServer: bind() failed on port " + std::to_string(port) +
+            " with error " + std::to_string(errno));
         return;
     }
 
-    if (listen(listenSock_, 5) == SOCKET_ERROR) {
+    if (listen(listenSock_, 5) < 0) {
+#ifdef _WIN32
         int error = WSAGetLastError();
+        closesocket(listenSock_);
+        WSACleanup();
+#else
+        int error = errno;
+        close(listenSock_);
+#endif
+        listenSock_ = INVALID_SOCKET;
         Logger::instance().log(LogLevel::Error,
             "AdminServer: listen() failed with error " + std::to_string(error));
-        closesocket(listenSock_);
-        listenSock_ = INVALID_SOCKET;
-        WSACleanup();
         return;
     }
 
@@ -80,36 +91,45 @@ void AdminServer::run(int port) {
         "Admin API listening on port " + std::to_string(port));
 
     while (running_) {
-        SOCKET c = accept(listenSock_, nullptr, nullptr);
+        socket_t c = accept(listenSock_, nullptr, nullptr);
         if (c == INVALID_SOCKET) {
-            if (running_) { // Only log if we're still supposed to be running
+            if (running_) {
+#ifdef _WIN32
                 int error = WSAGetLastError();
-                if (error != WSAEINTR) { // Don't log interrupt errors
+                if (error != WSAEINTR)
+#else
+                int error = errno;
+                if (error != EINTR)
+#endif
                     Logger::instance().log(LogLevel::Warn,
-                        "AdminServer: accept() failed with error " + std::to_string(error));
-                }
+                        "AdminServer: accept() failed with error " +
+                        std::to_string(error));
             }
             continue;
         }
 
         try {
             std::string response = AdminRoutes::handleRequest(c);
-            int sent = send(c, response.c_str(), static_cast<int>(response.size()), 0);
-            if (sent == SOCKET_ERROR) {
-                int error = WSAGetLastError();
-                Logger::instance().log(LogLevel::Warn,
-                    "AdminServer: send() failed with error " + std::to_string(error));
-            }
+            send(c, response.c_str(),
+                 static_cast<int>(response.size()), 0);
         } catch (const std::exception& ex) {
             Logger::instance().log(LogLevel::Error,
-                "AdminServer: Exception handling request: " + std::string(ex.what()));
+                "AdminServer: Exception handling request: " +
+                std::string(ex.what()));
         }
+
+#ifdef _WIN32
         closesocket(c);
+#else
+        close(c);
+#endif
     }
 
-    if (listenSock_ != INVALID_SOCKET) {
+#ifdef _WIN32
+    if (listenSock_ != INVALID_SOCKET)
         closesocket(listenSock_);
-        listenSock_ = INVALID_SOCKET;
-    }
-    WSACleanup();
+#else
+    if (listenSock_ != INVALID_SOCKET)
+        close(listenSock_);
+#endif
 }

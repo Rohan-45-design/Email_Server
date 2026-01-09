@@ -7,9 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "core/platform_socket.h"
 
 #include <sstream>
 #include <chrono>
@@ -31,14 +29,13 @@ static std::string generateAuthToken() {
 
 static std::string httpOK(const std::string& body,
                           const std::string& contentType = "text/plain") {
-    std::string res =
+    return
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: " + contentType + "\r\n"
         "Access-Control-Allow-Origin: http://localhost:5175\r\n"
         "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
         "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
         "\r\n" + body;
-    return res;
 }
 
 static std::string httpCreated(const std::string& body) {
@@ -105,7 +102,8 @@ static int nextUserId = 2;
 
 static nlohmann::json parseJsonBody(const std::string& request) {
     const auto pos = request.find("\r\n\r\n");
-    if (pos == std::string::npos) return nullptr;
+    if (pos == std::string::npos)
+        return nullptr;
 
     try {
         return nlohmann::json::parse(request.substr(pos + 4));
@@ -117,10 +115,12 @@ static nlohmann::json parseJsonBody(const std::string& request) {
 static std::pair<std::string, std::string>
 parseRequest(const std::string& req) {
     const auto s1 = req.find(' ');
-    if (s1 == std::string::npos) return {"", ""};
+    if (s1 == std::string::npos)
+        return {"", ""};
 
     const auto s2 = req.find(' ', s1 + 1);
-    if (s2 == std::string::npos) return {"", ""};
+    if (s2 == std::string::npos)
+        return {"", ""};
 
     return {
         req.substr(0, s1),
@@ -132,10 +132,12 @@ parseRequest(const std::string& req) {
    Main handler
    ============================================================ */
 
-std::string AdminRoutes::handleRequest(int sock) {
+std::string AdminRoutes::handleRequest(socket_t sock) {
     char buf[8192]{};
-    const int n = recv(sock, buf, sizeof(buf) - 1, 0);
-    if (n <= 0) return httpNotFound();
+
+    int n = recv(sock, buf, sizeof(buf) - 1, 0);
+    if (n <= 0)
+        return httpNotFound();
 
     std::string request(buf, n);
     auto [method, path] = parseRequest(request);
@@ -181,8 +183,7 @@ std::string AdminRoutes::handleRequest(int sock) {
 
     /* ---------- USERS ---------- */
     if (path == "/api/users" && method == "GET") {
-        return httpOK(nlohmann::json(users).dump(),
-                      "application/json");
+        return httpOK(nlohmann::json(users).dump(), "application/json");
     }
 
     if (path == "/api/users" && method == "POST") {
@@ -203,7 +204,7 @@ std::string AdminRoutes::handleRequest(int sock) {
     }
 
     if (path.rfind("/api/users/", 0) == 0 && method == "DELETE") {
-        const int id = std::stoi(path.substr(11));
+        int id = std::stoi(path.substr(11));
         auto it = std::find_if(users.begin(), users.end(),
             [&](const nlohmann::json& u) {
                 return u["id"] == id;
@@ -211,8 +212,7 @@ std::string AdminRoutes::handleRequest(int sock) {
 
         if (it != users.end()) {
             users.erase(it);
-            return httpOK("{\"message\":\"User deleted\"}",
-                          "application/json");
+            return httpOK("{\"message\":\"User deleted\"}", "application/json");
         }
         return httpNotFound();
     }
@@ -234,15 +234,10 @@ std::string AdminRoutes::handleRequest(int sock) {
         return httpOK(response.dump(), "application/json");
     }
 
-
     /* ---------- METRICS ---------- */
     if (path == "/api/server/metrics" && method == "GET") {
-        return httpOK(
-            Metrics::instance().renderPrometheus(),
-            "text/plain"
-        );
+        return httpOK(Metrics::instance().renderPrometheus(), "text/plain");
     }
-
 
     /* ---------- LOGS ---------- */
     if (path == "/api/logs" && method == "GET") {

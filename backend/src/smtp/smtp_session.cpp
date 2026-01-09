@@ -10,9 +10,7 @@
 #include "policy/attachment_policy.h"
 #include "core/rate_limiter.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "core/platform_socket.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
@@ -41,7 +39,7 @@ SmtpSession::SmtpSession(ServerContext& ctx, int clientSock)
 }
 
 SmtpSession::SmtpSession(ServerContext& ctx, int clientSock, SslPtr ssl)
-    : context_(ctx), sock_(clientSock), ssl_(std::move(ssl)), tlsActive_(true),
+    : context_(ctx), sock_(clientSock), ssl_(std::move(ssl)), tlsActive_(false),
       state_(SmtpState::CONNECTED), lastActivity_(std::chrono::steady_clock::now()) {
 
     sockaddr_in addr{};
@@ -200,7 +198,7 @@ void SmtpSession::run() {
 
         if (!RateLimiter::instance().allowConnection(peerIp_)) {
             sendLine("421 Too many connections");
-            closesocket(sock_);
+            close_socket(sock_);
             return;
         }
 
@@ -250,7 +248,7 @@ void SmtpSession::run() {
     // GUARANTEED cleanup - executes even if exceptions occur above
     try {
         if (sock_ != INVALID_SOCKET)
-            closesocket(sock_);
+            close_socket(sock_);
         
         RateLimiter::instance().releaseConnection(peerIp_);
     } catch (...) {
@@ -368,77 +366,72 @@ void SmtpSession::handleCommand(const std::string& line) {
    ========================= */
 
 void SmtpSession::handleStarttls() {
+    if (heloDomain_.empty()) {
+        sendLine("503 Send EHLO first");
+        return;
+    }
+
     if (tlsActive_) {
         sendLine("454 TLS already active");
         return;
     }
 
+    // RFC 3207
     sendLine("220 Ready to start TLS");
 
-    try {
-        SSL* raw = TlsContext::instance().createSSL(sock_);
-        if (!raw) {
-            Logger::instance().log(LogLevel::Error,
-                "SMTP STARTTLS: SSL creation failed (" + peerIp_ + ")");
-            sendLine("454 TLS negotiation failed");
-            closesocket(sock_);
-            sock_ = INVALID_SOCKET;
-            return;
-        }
-
-        int acceptResult = SSL_accept(raw);
-        if (acceptResult <= 0) {
-            int sslError = SSL_get_error(raw, acceptResult);
-            Logger::instance().log(LogLevel::Error,
-                "SMTP STARTTLS: SSL_accept failed (" + peerIp_ + "), error: " + std::to_string(sslError));
-            sendLine("454 TLS negotiation failed");
-            SSL_free(raw);
-            closesocket(sock_);
-            sock_ = INVALID_SOCKET;
-            return;
-        }
-
-        if (!TlsEnforcement::instance().validateTlsConnection(raw)) {
-            Logger::instance().log(LogLevel::Warn,
-                "SMTP STARTTLS: TLS validation failed (" + peerIp_ + ")");
-            Metrics::instance().inc("smtp_tls_validation_failures_total");
-            sendLine("454 TLS security requirements not met");
-            SSL_free(raw);
-            closesocket(sock_);
-            sock_ = INVALID_SOCKET;
-            return;
-        }
-
-        ssl_ = make_ssl_ptr(raw);
-        tlsActive_ = true;
-
-        /* RFC 3207: Reset SMTP state */
-        authed_ = false;
-        username_.clear();
-        heloDomain_.clear();
-        mailFrom_.clear();
-        rcptTo_.clear();
-        
-        Logger::instance().log(LogLevel::Info,
-            "SMTP STARTTLS successful (" + peerIp_ + ")");
-        Metrics::instance().inc("smtp_tls_handshakes_total");
-            
-    } catch (const std::exception& ex) {
-        Logger::instance().log(LogLevel::Error,
-            "SMTP STARTTLS crashed (" + peerIp_ + "): " + ex.what());
-        Metrics::instance().inc("smtp_tls_handshake_errors_total");
+    SSL* raw = TlsContext::instance().createSSL(sock_);
+    if (!raw) {
         sendLine("454 TLS negotiation failed");
-        closesocket(sock_);
+        close_socket(sock_);
         sock_ = INVALID_SOCKET;
-    } catch (...) {
-        Logger::instance().log(LogLevel::Error,
-            "SMTP STARTTLS crashed (" + peerIp_ + "): unknown exception");
-        Metrics::instance().inc("smtp_tls_handshake_errors_total");
-        sendLine("454 TLS negotiation failed");
-        closesocket(sock_);
-        sock_ = INVALID_SOCKET;
+        return;
     }
+
+    SSL_set_accept_state(raw);
+
+    int accept_result = SSL_accept(raw);
+    if (accept_result <= 0) {
+        int err = SSL_get_error(raw, accept_result);
+        char buf[256];
+        ERR_error_string_n(err, buf, sizeof(buf));
+        Logger::instance().log(LogLevel::Error, 
+            std::string("SSL_accept failed: ") + buf);
+        SSL_free(raw);
+        close_socket(sock_);
+        sock_ = INVALID_SOCKET;
+        return;
+    }
+
+    // Enforce TLS policy
+    if (!TlsEnforcement::instance().validateTlsConnection(raw)) {
+        SSL_free(raw);
+        close_socket(sock_);
+        sock_ = INVALID_SOCKET;
+        return;
+    }
+
+    // Activate TLS
+    ssl_ = make_ssl_ptr(raw);
+    tlsActive_ = true;
+
+    // RFC 3207: reset session state
+    authed_ = false;
+    username_.clear();
+    heloDomain_.clear();
+    mailFrom_.clear();
+    rcptTo_.clear();
+    state_ = SmtpState::CONNECTED;
+
+    Logger::instance().log(
+        LogLevel::Info,
+        "SMTP STARTTLS successful (" + peerIp_ + ")"
+    );
+
+    Metrics::instance().inc("smtp_tls_handshakes_total");
 }
+
+
+
 
 /* =========================
    EHLO / HELO
@@ -446,7 +439,7 @@ void SmtpSession::handleStarttls() {
 
 void SmtpSession::handleEhlo(const std::string& arg) {
     heloDomain_ = arg;
-    
+
     std::vector<std::string> capabilities = {
         context_.config.domain,
         "PIPELINING",
@@ -455,15 +448,23 @@ void SmtpSession::handleEhlo(const std::string& arg) {
         "SMTPUTF8"
     };
 
-    if (!tlsActive_)
+    // RFC 3207: Advertise STARTTLS only if TLS not active and allowed
+    if (!tlsActive_) {
         capabilities.push_back("STARTTLS");
+    }
 
-    if (tlsActive_)
+    // RFC 4954: Advertise AUTH only AFTER TLS
+    if (tlsActive_) {
         capabilities.push_back("AUTH LOGIN PLAIN");
+    }
 
     capabilities.push_back("HELP");
-    
-    sendMultilineResponse(capabilities);
+
+    // Canonical SMTP multiline formatting
+    for (size_t i = 0; i < capabilities.size(); ++i) {
+        std::string prefix = (i + 1 < capabilities.size()) ? "250-" : "250 ";
+        sendLine(prefix + capabilities[i]);
+    }
 }
 
 void SmtpSession::handleHelo(const std::string& arg) {
@@ -472,6 +473,16 @@ void SmtpSession::handleHelo(const std::string& arg) {
 }
 
 void SmtpSession::handleAuth(const std::string& args) {
+    if (heloDomain_.empty()) {
+        sendLine("503 Send EHLO first");
+        return;
+    }
+
+    if (!tlsActive_) {
+        sendLine("538 Encryption required for authentication");
+        return;
+    }
+
     if (authed_) {
         sendLine("503 Already authenticated");
         return;
@@ -614,6 +625,11 @@ void SmtpSession::handleData() {
 
 void SmtpSession::handleQuit() {
     sendLine("221 Bye");
-    closesocket(sock_);
+
+    if (tlsActive_ && ssl_) {
+        SSL_shutdown(ssl_.get());
+    }
+
+    close_socket(sock_);
     sock_ = INVALID_SOCKET;
 }

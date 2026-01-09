@@ -7,11 +7,8 @@
 #include "core/connection_manager.h"
 #include <chrono>
 #include <algorithm>
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "core/platform_socket.h"
 #include <atomic>
-#pragma comment(lib, "Ws2_32.lib")
 
 SmtpServer::SmtpServer(ServerContext& ctx, int port)
     : ctx_(ctx), port_(port), lastFailureTime_(std::chrono::steady_clock::now()) {}
@@ -86,8 +83,8 @@ void SmtpServer::stop() {
     running_ = false;
     // Close listener to interrupt blocking accept()
     if (listenSock_ != INVALID_SOCKET) {
-        shutdown(listenSock_, SD_BOTH);
-        closesocket(listenSock_);
+        shutdown(listenSock_, SHUT_RDWR);
+        close_socket(listenSock_);
         listenSock_ = INVALID_SOCKET;
     }
 
@@ -97,10 +94,10 @@ void SmtpServer::stop() {
     // Close all client sockets to wake session threads
     {
         std::lock_guard<std::mutex> lk(clientsMutex_);
-        for (SOCKET s : clientSockets_) {
+        for (socket_t s : clientSockets_) {
             if (s != INVALID_SOCKET) {
-                shutdown(s, SD_BOTH);
-                closesocket(s);
+                shutdown(s, SHUT_RDWR);
+                close_socket(s);
             }
         }
         clientSockets_.clear();
@@ -121,15 +118,9 @@ void SmtpServer::run() {
         LogLevel::Info,
         "SMTP listening on port " + std::to_string(port_));
 
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        Logger::instance().log(LogLevel::Error, "SMTP WSAStartup failed");
-        return;
-    }
-
     listenSock_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (listenSock_ == INVALID_SOCKET) {
-        WSACleanup();
+        Logger::instance().log(LogLevel::Error, "SMTP socket creation failed");
         return;
     }
 
@@ -139,15 +130,16 @@ void SmtpServer::run() {
     addr.sin_port = htons(static_cast<uint16_t>(port_));
 
     if (bind(listenSock_, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        closesocket(listenSock_);
-        WSACleanup();
+        close_socket(listenSock_);
+        listenSock_ = INVALID_SOCKET;
+        Logger::instance().log(LogLevel::Error, "SMTP bind failed");
         return;
     }
 
     if (listen(listenSock_, SOMAXCONN) == SOCKET_ERROR) {
-        closesocket(listenSock_);
+        close_socket(listenSock_);
         listenSock_ = INVALID_SOCKET;
-        WSACleanup();
+        Logger::instance().log(LogLevel::Error, "SMTP listen failed");
         return;
     }
 
@@ -184,14 +176,14 @@ void SmtpServer::run() {
             continue;
         }
 
-        SOCKET client = accept(listenSock_, nullptr, nullptr);
+        socket_t client = accept(listenSock_, nullptr, nullptr);
         if (client == INVALID_SOCKET) {
             if (!running_) break;
             continue;
         }
         
         sockaddr_in peer{};
-        int len = sizeof(peer);
+        socklen_t len = sizeof(peer);
         getpeername(client, (sockaddr*)&peer, &len);
 
         char ipbuf[INET_ADDRSTRLEN];
@@ -202,7 +194,7 @@ void SmtpServer::run() {
         if (!ConnectionManager::instance().tryAcquireConnection(ip)) {
             Logger::instance().log(LogLevel::Warn,
                 "SMTP connection limit exceeded for " + ip);
-            closesocket(client);
+            close_socket(client);
             continue;
         }
 
@@ -210,7 +202,7 @@ void SmtpServer::run() {
             Logger::instance().log(LogLevel::Warn,
                 "SMTP rate limit exceeded for " + ip);
             ConnectionManager::instance().releaseConnection(ip);
-            closesocket(client);
+            close_socket(client);
             continue;
         }
         
@@ -233,7 +225,7 @@ void SmtpServer::run() {
                         ERR_error_string(err, errbuf);
                         Logger::instance().log(LogLevel::Error, std::string("SMTPS handshake failed: ") + errbuf);
                         if (raw) SSL_free(raw);
-                        closesocket(client);
+                        close_socket(client);
                         std::lock_guard<std::mutex> lk(clientsMutex_);
                         clientSockets_.erase(std::remove(clientSockets_.begin(), clientSockets_.end(), client), clientSockets_.end());
                         return;
@@ -299,8 +291,7 @@ void SmtpServer::run() {
     }
 
     if (listenSock_ != INVALID_SOCKET) {
-        closesocket(listenSock_);
+        close_socket(listenSock_);
         listenSock_ = INVALID_SOCKET;
     }
-    WSACleanup();
 }

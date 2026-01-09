@@ -2,13 +2,10 @@
 #include "monitoring/metrics.h"
 #include "monitoring/health.h"
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "core/platform_socket.h"
 #include <sstream>
 #include <string>
 #include <algorithm>
-
-#pragma comment(lib, "ws2_32.lib")
 
 void HttpMetricsServer::start(int port) {
     running_ = true;
@@ -22,10 +19,9 @@ void HttpMetricsServer::stop() {
 }
 
 void HttpMetricsServer::run(int port) {
-    WSADATA wsa;
-    WSAStartup(MAKEWORD(2,2), &wsa);
+    // Network initialization is now handled centrally
 
-    SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+    socket_t s = socket(AF_INET, SOCK_STREAM, 0);
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -36,14 +32,14 @@ void HttpMetricsServer::run(int port) {
     listen(s, 5);
 
     while (running_) {
-        SOCKET client = accept(s, nullptr, nullptr);
+        socket_t client = accept(s, nullptr, nullptr);
         if (client == INVALID_SOCKET) continue;
 
         // Read HTTP request
         char buffer[4096];
         int bytesRead = recv(client, buffer, sizeof(buffer) - 1, 0);
         if (bytesRead <= 0) {
-            closesocket(client);
+            close_socket(client);
             continue;
         }
         buffer[bytesRead] = '\0';
@@ -97,9 +93,8 @@ void HttpMetricsServer::run(int port) {
         httpResponse << response;
 
         send(client, httpResponse.str().c_str(), (int)httpResponse.str().size(), 0);
-        closesocket(client);
+        close_socket(client);
     }
 
-    closesocket(s);
-    WSACleanup();
+    close_socket(s);
 }

@@ -8,10 +8,11 @@ public:
     static TlsContext& instance();
     bool init(const std::string& certFile, const std::string& keyFile);
     SSL* createSSL(int fd);
-    SSL_CTX* raw() const { return ctx_; }
+    SSL* createClientSSL(int fd); // For outbound connections
 
 private:
     TlsContext() = default;
     ~TlsContext();
     SSL_CTX* ctx_ = nullptr;
+    SSL_CTX* clientCtx_ = nullptr;
 };

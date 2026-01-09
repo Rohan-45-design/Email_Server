@@ -4,9 +4,7 @@
 #include "core/auth_manager.h"
 #include "core/input_validator.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "core/platform_socket.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <sstream>
@@ -36,7 +34,7 @@ void ImapSession::run() {
         if (sock_ == INVALID_SOCKET) break;
     }
     
-    if (sock_ != INVALID_SOCKET) closesocket(sock_);
+    if (sock_ != INVALID_SOCKET) close_socket(sock_);
     sock_ = INVALID_SOCKET;
 }
 
@@ -176,6 +174,6 @@ void ImapSession::handleLogin(const std::string& tag, const std::string& args) {
 void ImapSession::handleLogout(const std::string& tag) {
     sendLine("* BYE Logging out");
     sendLine(tag + " OK LOGOUT completed");
-    closesocket(sock_);
+    close_socket(sock_);
     sock_ = INVALID_SOCKET;
 }
